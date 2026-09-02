@@ -1,0 +1,9 @@
+{
+  "dataset_id": "interx_human_g1_v1",
+  "input_fps": 20,
+  "frames_per_token": 4,
+  "split_file": "configs/data/interx_human_g1_split_v1.json",
+  "human_schema": "human_intergen_262_v1",
+  "g1_schema": "g1_canonical_75d_v2",
+  "sequence_count": 7603
+}

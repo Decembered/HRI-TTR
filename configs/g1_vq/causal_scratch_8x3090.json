@@ -1,0 +1,21 @@
+{
+  "model_kind": "g1",
+  "representation_schema": "g1_canonical_75d_v2",
+  "output_dir": "/data/autovla/projects/HRI-TTR/checkpoints/g1_causal/scratch_8x3090",
+  "seed": 20260902,
+  "epochs": 200,
+  "max_steps": 200000,
+  "batch_size": 64,
+  "window_frames": 196,
+  "window_stride": 64,
+  "learning_rate": 0.0002,
+  "weight_decay": 0.0,
+  "gradient_clip_norm": 1.0,
+  "amp": true,
+  "tokenizer_width": 512,
+  "tokenizer_code_dim": 512,
+  "tokenizer_codebook_size": 256,
+  "tokenizer_residual_depth": 3,
+  "tokenizer_ema_decay": 0.99,
+  "tokenizer_commitment_weight": 1.0
+}
