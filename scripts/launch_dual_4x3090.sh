@@ -46,13 +46,13 @@ launch_domain \
   0,1,2,3 \
   29611 \
   configs/human_vq/causal_scratch_4x3090_long.json \
-  runs/20260903_human_causal_full
+  runs/20260903_human_causal_full_b128
 launch_domain \
   g1 \
   4,5,6,7 \
   29612 \
   configs/g1_vq/causal_scratch_4x3090_long.json \
-  runs/20260903_g1_causal_full
+  runs/20260903_g1_causal_full_b256
 
 printf 'human pid: %s\n' "$(<"${LOG_ROOT}/human.pid")"
 printf 'g1 pid: %s\n' "$(<"${LOG_ROOT}/g1.pid")"

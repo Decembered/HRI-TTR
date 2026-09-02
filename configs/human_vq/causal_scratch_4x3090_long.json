@@ -1,11 +1,11 @@
 {
   "model_kind": "human",
   "representation_schema": "human_intergen_262_v1",
-  "output_dir": "runs/20260903_human_causal_full",
+  "output_dir": "runs/20260903_human_causal_full_b128",
   "seed": 20260903,
-  "epochs": 1000,
+  "epochs": 3000,
   "max_steps": 300000,
-  "batch_size": 64,
+  "batch_size": 128,
   "window_frames": 196,
   "window_stride": 64,
   "learning_rate": 0.0002,
@@ -21,6 +21,6 @@
   "log_every_steps": 50,
   "validation_every_steps": 5000,
   "wandb_project": "hri-ttr-causal-vq",
-  "wandb_run_name": "human-causal-full-20260903",
-  "wandb_run_id": "human-causal-full-20260903"
+  "wandb_run_name": "human-causal-full-b128-20260903",
+  "wandb_run_id": "human-causal-full-b128-20260903"
 }

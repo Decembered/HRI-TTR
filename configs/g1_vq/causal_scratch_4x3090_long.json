@@ -1,11 +1,11 @@
 {
   "model_kind": "g1",
   "representation_schema": "g1_canonical_75d_v2",
-  "output_dir": "runs/20260903_g1_causal_full",
+  "output_dir": "runs/20260903_g1_causal_full_b256",
   "seed": 20260903,
-  "epochs": 1000,
+  "epochs": 3000,
   "max_steps": 300000,
-  "batch_size": 128,
+  "batch_size": 256,
   "window_frames": 196,
   "window_stride": 64,
   "learning_rate": 0.0002,
@@ -21,6 +21,6 @@
   "log_every_steps": 50,
   "validation_every_steps": 5000,
   "wandb_project": "hri-ttr-causal-vq",
-  "wandb_run_name": "g1-causal-full-20260903",
-  "wandb_run_id": "g1-causal-full-20260903"
+  "wandb_run_name": "g1-causal-full-b256-20260903",
+  "wandb_run_id": "g1-causal-full-b256-20260903"
 }
