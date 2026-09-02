@@ -21,6 +21,12 @@ launch_domain() {
     resume_args=(--resume "${output}/interrupted.pt")
   fi
   nohup env \
+    -u ALL_PROXY \
+    -u HTTPS_PROXY \
+    -u HTTP_PROXY \
+    -u all_proxy \
+    -u https_proxy \
+    -u http_proxy \
     CUDA_VISIBLE_DEVICES="${devices}" \
     WANDB_MODE=online \
     PYTHONPATH="${PROJECT_ROOT}/src" \
