@@ -39,3 +39,47 @@ while loading. They are refused unless the caller explicitly passes
 `--allow-trusted-pickle`. Use that flag only for the trusted local Stage 0
 corpus; never use it for downloaded or unreviewed files. Prepared output records
 `source_format=safe_npz` or `source_format=trusted_pickle` as provenance.
+
+## Same-motion corpus
+
+The formal Human/G1 tokenizer input is a prepared corpus, not the raw pairing
+manifest. Build and verify it on the training server with:
+
+```sh
+hri-ttr data prepare-same-motion \
+  --manifest /data/users/autovla/datasets/hri_ttr_same_motion_v1/manifest/same_motion.jsonl \
+  --output /data/users/autovla/datasets/hri_ttr_same_motion_20hz_v1 \
+  --g1-mjcf /data/users/autovla/sonic_repro/gmr/assets/unitree_g1/g1_mocap_29dof.xml \
+  --target-fps 20 \
+  --workers 16
+
+hri-ttr data audit-corpus \
+  --corpus /data/users/autovla/datasets/hri_ttr_same_motion_20hz_v1
+
+hri-ttr data smoke-load \
+  --corpus /data/users/autovla/datasets/hri_ttr_same_motion_20hz_v1 \
+  --split train \
+  --domain human \
+  --batches 10
+```
+
+The corpus stores unnormalized `float32` Human `[T,262]` and G1 `[T,75]`
+arrays at 20 FPS. The training loader applies the train-only normalizer at read
+time, reads shards with NumPy memory mapping, never crosses a sequence boundary,
+and masks repeated tail padding from the loss.
+
+Formal tokenizer training selects the corpus directly and keeps train and
+validation data separate:
+
+```sh
+torchrun --nproc_per_node=8 -m hri_ttr.cli train human-vq \
+  --config configs/human_vq/causal_scratch_8x3090.json \
+  --corpus /data/users/autovla/datasets/hri_ttr_same_motion_20hz_v1
+
+torchrun --nproc_per_node=8 -m hri_ttr.cli train g1-vq \
+  --config configs/g1_vq/causal_scratch_8x3090.json \
+  --corpus /data/users/autovla/datasets/hri_ttr_same_motion_20hz_v1
+```
+
+These commands are documented for the later training stage; corpus preparation
+and audit do not start either model.

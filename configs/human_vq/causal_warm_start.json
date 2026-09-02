@@ -17,6 +17,6 @@
   "tokenizer_codebook_size": 256,
   "tokenizer_residual_depth": 3,
   "tokenizer_ema_decay": 0.99,
-  "tokenizer_commitment_weight": 1.0,
+  "tokenizer_commitment_weight": 0.02,
   "warm_start_checkpoint": "checkpoints/baselines/ttr_human_noncausal/imported_compatible_state.pt"
 }

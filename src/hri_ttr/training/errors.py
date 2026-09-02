@@ -24,6 +24,8 @@ class TrainingReason(StrEnum):
     RESUME_COMPLETE = "resume checkpoint has already reached max_steps"
     SCHEMA = "representation schema does not match model kind"
     UNSUPPORTED_LOSS = "unsupported reconstruction schema"
+    WANDB_INIT = "W&B did not create a run"
+    WANDB_IDENTITY = "W&B project, run name, and run id must be configured together"
     WARM_START_DOMAIN = "only Human training supports warm-start"
     WARM_START_HASH = "warm-start checkpoint hash does not match config"
     WINDOW_ALIGNMENT = "training windows must align to four-frame tokens"

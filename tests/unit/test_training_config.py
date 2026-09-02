@@ -58,6 +58,43 @@ def test_training_config_uses_authoritative_representation_schema(
     assert config.feature_dim == feature_dim
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "configs/human_vq/causal_scratch.json",
+        "configs/human_vq/causal_scratch_8x3090.json",
+        "configs/human_vq/causal_warm_start.json",
+        "configs/human_vq/causal_8gpu_smoke.json",
+    ],
+)
+def test_human_training_config_uses_official_ttr_commitment_weight(
+    relative_path: str,
+) -> None:
+    # When
+    config = TrainConfig.load_json(Path(relative_path))
+
+    # Then
+    assert config.tokenizer_commitment_weight == 0.02
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "configs/g1_vq/causal_scratch.json",
+        "configs/g1_vq/causal_scratch_8x3090.json",
+        "configs/g1_vq/causal_8gpu_smoke.json",
+    ],
+)
+def test_g1_training_config_uses_ttr_style_commitment_weight(
+    relative_path: str,
+) -> None:
+    # When
+    config = TrainConfig.load_json(Path(relative_path))
+
+    # Then
+    assert config.tokenizer_commitment_weight == 0.02
+
+
 def test_paired_training_data_uses_authoritative_schemas() -> None:
     # Given
     path = Path("configs/data/interx_human_g1_training_v1.json")
@@ -106,3 +143,16 @@ def test_training_identity_rejects_all_zero_hash() -> None:
             split_sha256="1" * 64,
             source_sha256="2" * 64,
         )
+
+
+def test_training_config_rejects_partial_wandb_identity(tmp_path: Path) -> None:
+    # Given
+    values = TrainConfig.load_json(
+        Path("configs/g1_vq/causal_scratch.json")
+    ).model_dump()
+    values["output_dir"] = tmp_path
+    values["wandb_project"] = "hri-ttr-causal-vq"
+
+    # When / Then
+    with pytest.raises(ValidationError):
+        _ = TrainConfig.model_validate(values)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -44,6 +45,8 @@ def _invocation(tmp_path: Path, kind: ModelKind, schema: str) -> TrainingInvocat
         tokenizer_width=8,
         tokenizer_code_dim=4,
         tokenizer_residual_depth=1,
+        log_every_steps=1,
+        validation_every_steps=1,
     )
     return TrainingInvocation(config=config, identity=identity)
 
@@ -81,3 +84,29 @@ def test_train_saves_and_resumes_independent_models(tmp_path: Path) -> None:
     assert human_resumed.binding.model_kind is ModelKind.HUMAN
     assert g1_resumed.binding.model_kind is ModelKind.G1
     assert human_resumed.last_checkpoint != g1_resumed.last_checkpoint
+
+
+def test_training_reports_step_and_validation_metrics(tmp_path: Path) -> None:
+    # Given
+    invocation = _invocation(tmp_path, ModelKind.G1, G1_SCHEMA_VERSION)
+    values = np.arange(8 * 75, dtype=np.float32).reshape(8, 75) / 1000.0
+    data = (FeatureSequence("g", values),)
+
+    # When
+    _ = train(
+        G1Tokenizer(TokenizerArchitecture(width=8, code_dim=4, residual_depth=1)),
+        data,
+        data,
+        invocation,
+    )
+
+    # Then
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "g1" / "metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert rows[0]["step"] == 1
+    assert "train/total_loss" in rows[0]
+    assert rows[-1]["validation/loss"] >= 0.0

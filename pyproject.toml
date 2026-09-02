@@ -12,6 +12,7 @@ dependencies = [
     "torch==2.7.1",
     "typer>=0.15",
     "typing-extensions>=4.12",
+    "wandb>=0.21,<0.23",
 ]
 
 [project.scripts]

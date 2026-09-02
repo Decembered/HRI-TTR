@@ -46,6 +46,11 @@ class TrainConfig(BaseModel):
     tokenizer_ema_decay: float = Field(default=0.99, ge=0.0, lt=1.0)
     tokenizer_commitment_weight: float = Field(default=1.0, gt=0.0)
     warm_start_checkpoint: Path | None = None
+    log_every_steps: int = Field(default=100, gt=0)
+    validation_every_steps: int = Field(default=5_000, gt=0)
+    wandb_project: str | None = Field(default=None, min_length=1)
+    wandb_run_name: str | None = Field(default=None, min_length=1)
+    wandb_run_id: str | None = Field(default=None, min_length=1)
 
     @property
     def feature_dim(self) -> int:
@@ -83,6 +88,15 @@ class TrainConfig(BaseModel):
             raise TrainingError(TrainingReason.CODEBOOK)
         if self.model_kind is ModelKind.G1 and self.warm_start_checkpoint is not None:
             raise TrainingError(TrainingReason.G1_WARM_START)
+        wandb_identity = (
+            self.wandb_project,
+            self.wandb_run_name,
+            self.wandb_run_id,
+        )
+        if any(value is not None for value in wandb_identity) and not all(
+            value is not None for value in wandb_identity
+        ):
+            raise TrainingError(TrainingReason.WANDB_IDENTITY)
         return self
 
     @classmethod

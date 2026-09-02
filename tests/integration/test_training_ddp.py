@@ -5,9 +5,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
+import torch
+from torch import distributed
 
 from hri_ttr.checkpoints.kinds import ModelKind
 from hri_ttr.representations.g1.schema import G1_SCHEMA_VERSION
@@ -22,6 +25,7 @@ from hri_ttr.training import (
 
 
 def _worker(output: Path) -> None:
+    _ = distributed.init_process_group("gloo")
     config = TrainConfig(
         model_kind=ModelKind.G1,
         representation_schema=G1_SCHEMA_VERSION,
@@ -54,6 +58,11 @@ def _worker(output: Path) -> None:
     result = train(model, sequences, sequences, TrainingInvocation(config, identity))
     if result.global_step != 1:
         raise RuntimeError
+    codebooks = [torch.empty_like(model.quantizer.codebook) for _ in range(2)]
+    _ = cast("object", distributed.all_gather(codebooks, model.quantizer.codebook))
+    if not torch.equal(codebooks[0], codebooks[1]):
+        raise RuntimeError
+    distributed.destroy_process_group()
 
 
 @pytest.mark.skipif(

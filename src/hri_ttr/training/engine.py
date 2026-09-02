@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import math
 import signal
+import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
 from torch import nn
 
 from hri_ttr.checkpoints import TrainingProgress
-from hri_ttr.training.data import AlignedWindowDataset, TrainingBatch, collate_windows
+from hri_ttr.training.data import TrainingBatch, WindowDataset, collate_windows
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from hri_ttr.training.config import TrainConfig
     from hri_ttr.training.distributed import DistributedContext
     from hri_ttr.training.losses import MaskedReconstructionLoss
+    from hri_ttr.training.monitoring import TrainingMonitor
     from hri_ttr.training.signals import StopController
 
 
@@ -40,14 +42,15 @@ class EngineInputs:
 
     model: CausalMotionTokenizer
     distributed_model: DistributedTokenizer | None
-    training_data: AlignedWindowDataset
-    validation_data: AlignedWindowDataset
+    training_data: WindowDataset
+    validation_data: WindowDataset
     config: TrainConfig
     distributed: DistributedContext
     optimizer: torch.optim.Optimizer
     scaler: torch.amp.GradScaler
     loss: MaskedReconstructionLoss
     stop: StopController
+    monitor: TrainingMonitor
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,26 +77,99 @@ def _epoch_indices(inputs: EngineInputs, epoch: int) -> list[int]:
     ]
     if inputs.distributed.world_size == 1:
         return order
-    padded = math.ceil(len(order) / inputs.distributed.world_size)
-    padded *= inputs.distributed.world_size
-    order.extend(order[: padded - len(order)])
-    return order[inputs.distributed.rank : padded : inputs.distributed.world_size]
+    usable = len(order) // inputs.distributed.world_size * inputs.distributed.world_size
+    return order[inputs.distributed.rank : usable : inputs.distributed.world_size]
 
 
 def _batches(
-    dataset: AlignedWindowDataset, indices: list[int], batch_size: int
+    dataset: WindowDataset, indices: list[int], batch_size: int
 ) -> Iterator[TrainingBatch]:
     for start in range(0, len(indices), batch_size):
         selected = [dataset[index] for index in indices[start : start + batch_size]]
         yield collate_windows(selected)
 
 
-def _forward(inputs: EngineInputs, batch: TrainingBatch) -> TokenizerOutput:
-    features = batch.features.to(inputs.distributed.device)
-    frame_mask = batch.frame_mask.to(inputs.distributed.device)
+def _forward(
+    inputs: EngineInputs, features: torch.Tensor, frame_mask: torch.Tensor
+) -> TokenizerOutput:
     if inputs.distributed_model is None:
         return inputs.model.forward(features, frame_mask)
     return inputs.distributed_model(features, frame_mask)
+
+
+def _train_batch(inputs: EngineInputs, batch: TrainingBatch) -> dict[str, float] | None:
+    try:
+        started_at = time.perf_counter()
+        features = batch.features.to(inputs.distributed.device)
+        frame_mask = batch.frame_mask.to(inputs.distributed.device)
+        inputs.optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(
+            device_type=inputs.distributed.device.type,
+            enabled=inputs.config.amp,
+            dtype=(
+                torch.float16
+                if inputs.distributed.device.type == "cuda"
+                else torch.bfloat16
+            ),
+        ):
+            output = _forward(inputs, features, frame_mask)
+            reconstruction = inputs.loss.forward(
+                output.reconstruction, features, frame_mask
+            )
+            total = reconstruction + output.encoding.commitment_loss
+        _ = inputs.scaler.scale(total).backward()
+        inputs.scaler.unscale_(inputs.optimizer)
+        gradient_norm = nn.utils.clip_grad_norm_(
+            inputs.model.parameters(), inputs.config.gradient_clip_norm
+        )
+        _ = inputs.scaler.step(inputs.optimizer)
+        inputs.scaler.update()
+    except KeyboardInterrupt:
+        inputs.stop.request(signal.SIGINT)
+        return None
+    elapsed = max(time.perf_counter() - started_at, 1e-9)
+    memory_gib = 0.0
+    if inputs.distributed.device.type == "cuda":
+        memory_gib = torch.cuda.max_memory_allocated(inputs.distributed.device) / (
+            1024**3
+        )
+        torch.cuda.reset_peak_memory_stats(inputs.distributed.device)
+    return {
+        "total_loss": float(total.detach().item()),
+        "reconstruction_loss": float(reconstruction.detach().item()),
+        "commitment_loss": float(output.encoding.commitment_loss.detach().item()),
+        "codebook_perplexity": float(output.encoding.perplexity.detach().item()),
+        "gradient_norm": float(gradient_norm.detach().item()),
+        "learning_rate": inputs.config.learning_rate,
+        "samples_per_second": (
+            features.shape[0] * inputs.distributed.world_size / elapsed
+        ),
+        "cuda_peak_memory_gib": memory_gib,
+    }
+
+
+def _periodic_validation(
+    inputs: EngineInputs, progress: TrainingProgress
+) -> TrainingProgress | None:
+    validation = validate(inputs)
+    if validation.loss is None:
+        return None
+    updated = inputs.monitor.record_validation(progress, validation.loss)
+    _ = inputs.model.train()
+    return updated
+
+
+def _after_step(
+    inputs: EngineInputs,
+    progress: TrainingProgress,
+    metrics: dict[str, float],
+) -> TrainingProgress | None:
+    step = progress.global_step
+    if step % inputs.config.log_every_steps == 0:
+        inputs.monitor.record_training(step, metrics)
+    if step % inputs.config.validation_every_steps == 0:
+        return _periodic_validation(inputs, progress)
+    return progress
 
 
 def run_steps(inputs: EngineInputs, progress: TrainingProgress) -> StepOutcome:
@@ -101,51 +177,38 @@ def run_steps(inputs: EngineInputs, progress: TrainingProgress) -> StepOutcome:
     epoch = progress.epoch
     batch_in_epoch = progress.batch_in_epoch
     step = progress.global_step
+    best_validation_loss = progress.best_validation_loss
     while epoch < inputs.config.epochs and step < inputs.config.max_steps:
         _ = inputs.model.train()
         indices = _epoch_indices(inputs, epoch)
-        batches = tuple(
+        batch_count = math.ceil(len(indices) / inputs.config.batch_size)
+        for index, batch in enumerate(
             _batches(inputs.training_data, indices, inputs.config.batch_size)
-        )
-        for index, batch in enumerate(batches):
+        ):
             if inputs.stop.requested:
                 break
             if index < batch_in_epoch:
                 continue
-            try:
-                features = batch.features.to(inputs.distributed.device)
-                frame_mask = batch.frame_mask.to(inputs.distributed.device)
-                inputs.optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(
-                    device_type=inputs.distributed.device.type,
-                    enabled=inputs.config.amp,
-                    dtype=torch.float16
-                    if inputs.distributed.device.type == "cuda"
-                    else torch.bfloat16,
-                ):
-                    output = _forward(inputs, batch)
-                    reconstruction = inputs.loss.forward(
-                        output.reconstruction, features, frame_mask
-                    )
-                    total = reconstruction + output.encoding.commitment_loss
-                scaled = inputs.scaler.scale(total)
-                torch.autograd.backward(scaled)
-                inputs.scaler.unscale_(inputs.optimizer)
-                _ = nn.utils.clip_grad_norm_(
-                    inputs.model.parameters(), inputs.config.gradient_clip_norm
-                )
-                _ = inputs.scaler.step(inputs.optimizer)
-                inputs.scaler.update()
-            except KeyboardInterrupt:
-                inputs.stop.request(signal.SIGINT)
+            metrics = _train_batch(inputs, batch)
+            if metrics is None:
                 break
             step += 1
             batch_in_epoch = index + 1
+            current = TrainingProgress(
+                epoch=epoch,
+                batch_in_epoch=batch_in_epoch,
+                global_step=step,
+                best_validation_loss=best_validation_loss,
+            )
+            updated = _after_step(inputs, current, metrics)
+            if updated is None:
+                break
+            best_validation_loss = updated.best_validation_loss
             if step >= inputs.config.max_steps or inputs.stop.requested:
                 break
         if inputs.stop.requested:
             break
-        if batch_in_epoch >= len(batches):
+        if batch_in_epoch >= batch_count:
             epoch += 1
             batch_in_epoch = 0
     return StepOutcome(
@@ -153,7 +216,7 @@ def run_steps(inputs: EngineInputs, progress: TrainingProgress) -> StepOutcome:
             epoch=epoch,
             batch_in_epoch=batch_in_epoch,
             global_step=step,
-            best_validation_loss=progress.best_validation_loss,
+            best_validation_loss=best_validation_loss,
         ),
         interrupted=inputs.stop.requested,
     )
@@ -164,7 +227,13 @@ def validate(inputs: EngineInputs) -> ValidationOutcome:
     _ = inputs.model.eval()
     total = torch.zeros((), device=inputs.distributed.device)
     batches = torch.zeros((), device=inputs.distributed.device)
-    indices = list(range(len(inputs.validation_data)))
+    indices = list(
+        range(
+            inputs.distributed.rank,
+            len(inputs.validation_data),
+            inputs.distributed.world_size,
+        )
+    )
     with torch.no_grad():
         for batch in _batches(
             inputs.validation_data, indices, inputs.config.batch_size
@@ -174,7 +243,7 @@ def validate(inputs: EngineInputs) -> ValidationOutcome:
             try:
                 features = batch.features.to(inputs.distributed.device)
                 frame_mask = batch.frame_mask.to(inputs.distributed.device)
-                output = _forward(inputs, batch)
+                output = _forward(inputs, features, frame_mask)
                 batch_loss = inputs.loss.forward(
                     output.reconstruction, features, frame_mask
                 )
@@ -187,4 +256,7 @@ def validate(inputs: EngineInputs) -> ValidationOutcome:
                 return ValidationOutcome(None)
     if inputs.stop.requested:
         return ValidationOutcome(None)
+    if inputs.distributed.world_size > 1:
+        _ = cast("object", torch.distributed.all_reduce(total))
+        _ = cast("object", torch.distributed.all_reduce(batches))
     return ValidationOutcome(float((total / batches).item()))

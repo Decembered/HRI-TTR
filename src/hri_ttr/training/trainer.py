@@ -22,12 +22,14 @@ from hri_ttr.training.data import (
     AlignedWindowDataset,
     FeatureSequence,
     WindowConfig,
+    WindowDataset,
     build_windows,
 )
 from hri_ttr.training.distributed import finalize_distributed, initialize_distributed
 from hri_ttr.training.engine import EngineInputs, run_steps, validate
 from hri_ttr.training.errors import TrainingError, TrainingReason
 from hri_ttr.training.losses import MaskedReconstructionLoss
+from hri_ttr.training.monitoring import MonitorArtifacts, TrainingMonitor
 from hri_ttr.training.results import TrainingInterrupted, TrainingResult
 from hri_ttr.training.signals import StopController, installed_stop_controller
 
@@ -106,12 +108,13 @@ def _dataset(
 
 def _execute(
     model: CausalMotionTokenizer,
-    training_sequences: tuple[FeatureSequence, ...],
-    validation_sequences: tuple[FeatureSequence, ...],
+    training_data: WindowDataset,
+    validation_data: WindowDataset,
     invocation: TrainingInvocation,
     stop: StopController,
 ) -> TrainingResult | TrainingInterrupted:
     context = initialize_distributed()
+    monitor: TrainingMonitor | None = None
     try:
         config = invocation.config
         random.seed(config.seed)
@@ -131,6 +134,11 @@ def _execute(
         )
         components = CheckpointComponents(model, optimizer, scaler)
         binding = _binding(config, invocation.identity)
+        monitor = TrainingMonitor(
+            config,
+            context,
+            MonitorArtifacts(components, binding, stop),
+        )
         progress = TrainingProgress(
             epoch=0,
             batch_in_epoch=0,
@@ -147,21 +155,18 @@ def _execute(
         if context.world_size > 1:
             device_ids = [context.local_rank] if context.device.type == "cuda" else None
             distributed_model = DistributedDataParallel(model, device_ids=device_ids)
-        datasets = (
-            _dataset(training_sequences, config),
-            _dataset(validation_sequences, config),
-        )
         engine = EngineInputs(
             model=model,
             distributed_model=distributed_model,
-            training_data=datasets[0],
-            validation_data=datasets[1],
+            training_data=training_data,
+            validation_data=validation_data,
             config=config,
             distributed=context,
             optimizer=optimizer,
             scaler=scaler,
             loss=MaskedReconstructionLoss.for_schema(config.representation_schema),
             stop=stop,
+            monitor=monitor,
         )
         outcome = run_steps(engine, progress)
         progress = outcome.progress
@@ -173,8 +178,12 @@ def _execute(
         validation = validate(engine)
         if validation.loss is None:
             return save_interrupted(artifact_state)
-        return save_completed(artifact_state, validation.loss)
+        result = save_completed(artifact_state, validation.loss)
+        monitor.report_validation(progress.global_step, validation.loss)
+        return result
     finally:
+        if monitor is not None:
+            monitor.close()
         finalize_distributed(context)
 
 
@@ -187,8 +196,8 @@ def train(
     """Train through a bounded step count with validation and exact resume."""
     result = _execute(
         model,
-        training_sequences,
-        validation_sequences,
+        _dataset(training_sequences, invocation.config),
+        _dataset(validation_sequences, invocation.config),
         invocation,
         StopController(),
     )
@@ -206,5 +215,23 @@ def run_training_boundary(
     """Convert SIGTERM or Ctrl-C into an atomic resumable result."""
     with installed_stop_controller() as stop:
         return _execute(
-            model, training_sequences, validation_sequences, invocation, stop
+            model,
+            _dataset(training_sequences, invocation.config),
+            _dataset(validation_sequences, invocation.config),
+            invocation,
+            stop,
         )
+
+
+def train_datasets(
+    model: CausalMotionTokenizer,
+    training_data: WindowDataset,
+    validation_data: WindowDataset,
+    invocation: TrainingInvocation,
+) -> TrainingResult:
+    """Train from lazy sequence-bounded datasets without materializing all windows."""
+    with installed_stop_controller() as stop:
+        result = _execute(model, training_data, validation_data, invocation, stop)
+    if isinstance(result, TrainingInterrupted):
+        raise KeyboardInterrupt
+    return result

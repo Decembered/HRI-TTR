@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
-from torch import nn
+from torch import distributed, nn
 from torch.nn import functional
 from typing_extensions import override
 
@@ -53,16 +55,26 @@ class EMAVectorQuantizer(nn.Module):
         _ = self.ema_count.fill_(1.0)
         initialized = torch.ones((), dtype=torch.bool, device=self.initialized.device)
         _ = self.initialized.copy_(initialized)
+        if distributed.is_initialized():
+            _ = distributed.broadcast(self.codebook, src=0)
+            _ = distributed.broadcast(self.ema_sum, src=0)
+            _ = distributed.broadcast(self.ema_count, src=0)
+            _ = distributed.broadcast(self.initialized, src=0)
 
     @torch.no_grad()
     def _update(self, valid: torch.Tensor, valid_ids: torch.Tensor) -> None:
         one_hot = functional.one_hot(valid_ids, self.codebook_size).to(valid.dtype)
         counts = one_hot.sum(dim=0)
         sums = one_hot.transpose(0, 1) @ valid
+        if distributed.is_initialized():
+            _ = cast("object", distributed.all_reduce(counts))
+            _ = cast("object", distributed.all_reduce(sums))
         _ = self.ema_count.mul_(self.decay).add_(counts, alpha=1.0 - self.decay)
         _ = self.ema_sum.mul_(self.decay).add_(sums, alpha=1.0 - self.decay)
         repeats = (self.codebook_size + valid.shape[0] - 1) // valid.shape[0]
         candidates = valid.repeat(repeats, 1)[: self.codebook_size]
+        if distributed.is_initialized():
+            _ = distributed.broadcast(candidates, src=0)
         dead = self.ema_count < 1.0
         _ = self.ema_sum.copy_(torch.where(dead.unsqueeze(1), candidates, self.ema_sum))
         _ = self.ema_count.copy_(

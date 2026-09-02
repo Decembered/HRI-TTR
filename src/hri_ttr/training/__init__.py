@@ -8,11 +8,12 @@ from hri_ttr.training.data import (
     TrainingBatch,
     TrainingWindow,
     WindowConfig,
+    WindowDataset,
     build_windows,
     collate_windows,
 )
 from hri_ttr.training.results import TrainingInterrupted, TrainingResult
-from hri_ttr.training.trainer import run_training_boundary, train
+from hri_ttr.training.trainer import run_training_boundary, train, train_datasets
 
 __all__ = [
     "AlignedWindowDataset",
@@ -26,8 +27,10 @@ __all__ = [
     "TrainingResult",
     "TrainingWindow",
     "WindowConfig",
+    "WindowDataset",
     "build_windows",
     "collate_windows",
     "run_training_boundary",
     "train",
+    "train_datasets",
 ]

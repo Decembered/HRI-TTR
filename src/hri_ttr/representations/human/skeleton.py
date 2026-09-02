@@ -66,10 +66,10 @@ def _gaussian_filter_nearest(values: Float32Array, sigma: float) -> Float32Array
     padded[radius : radius + len(values)] = values
     padded[radius + len(values) :] = values[-1]
     result: Float32Array = np.empty_like(values)
-    for row in range(len(values)):
-        for column in range(3):
-            window = padded[row : row + len(weight_array), column]
-            result[row, column] = (window * weight_array).sum()
+    for column in range(3):
+        result[:, column] = np.convolve(
+            padded[:, column], weight_array, mode="valid"
+        ).astype(np.float32)
     return result
 
 

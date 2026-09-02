@@ -5,6 +5,7 @@ import copy
 import numpy as np
 import pytest
 import torch
+from torch.nn import functional
 
 from hri_ttr.representations.g1.schema import G1_SCHEMA_VERSION
 from hri_ttr.representations.human.normalizer import SCHEMA_ID as HUMAN_SCHEMA_ID
@@ -45,6 +46,93 @@ def test_loss_rejects_zero_valid_frames() -> None:
     # When / Then
     with pytest.raises(ZeroValidFramesError):
         _ = loss.forward(values, values, mask)
+
+
+def test_human_loss_matches_official_ttr_reconstruction_and_velocity() -> None:
+    # Given
+    target = torch.zeros((1, 3, 262))
+    prediction = target.clone()
+    prediction[:, :, 0] = torch.tensor([0.0, 1.0, 3.0])
+    prediction[:, :, 100] = 2.0
+    mask = torch.ones((1, 3), dtype=torch.bool)
+
+    # When
+    actual = MaskedReconstructionLoss.for_schema(HUMAN_SCHEMA_ID).forward(
+        prediction, target, mask
+    )
+
+    # Then
+    reconstruction = functional.smooth_l1_loss(prediction, target)
+    position_velocity = functional.smooth_l1_loss(
+        prediction[:, 1:, :66] - prediction[:, :-1, :66],
+        target[:, 1:, :66] - target[:, :-1, :66],
+    )
+    expected = reconstruction + 0.5 * position_velocity
+    torch.testing.assert_close(actual, expected)
+
+
+def test_human_velocity_loss_excludes_pairs_touching_padding() -> None:
+    # Given
+    target = torch.zeros((1, 4, 262))
+    prediction = target.clone()
+    prediction[:, 2:, :66] = 100.0
+    mask = torch.tensor([[True, True, False, False]])
+
+    # When
+    actual = MaskedReconstructionLoss.for_schema(HUMAN_SCHEMA_ID).forward(
+        prediction, target, mask
+    )
+
+    # Then
+    assert float(actual.item()) == 0.0
+
+
+def test_g1_loss_uses_grouped_smooth_l1_and_position_deltas() -> None:
+    # Given
+    target = torch.zeros((1, 3, 75))
+    prediction = target.clone()
+    prediction[:, :, 0] = torch.tensor([0.0, 1.0, 3.0])
+    prediction[:, :, 3] = 2.0
+    prediction[:, :, 9] = torch.tensor([0.0, 2.0, 5.0])
+    prediction[:, :, 40] = 2.0
+    prediction[:, :, 50] = 2.0
+    prediction[:, :, 73] = 2.0
+    mask = torch.ones((1, 3), dtype=torch.bool)
+
+    # When
+    actual = MaskedReconstructionLoss.for_schema(G1_SCHEMA_VERSION).forward(
+        prediction, target, mask
+    )
+
+    # Then
+    groups = (
+        (0, 3, 2.0),
+        (3, 9, 2.0),
+        (9, 38, 1.0),
+        (38, 44, 1.0),
+        (44, 73, 0.5),
+        (73, 75, 1.0),
+    )
+    grouped = (
+        sum(
+            functional.smooth_l1_loss(
+                prediction[:, :, start:stop], target[:, :, start:stop]
+            )
+            * weight
+            for start, stop, weight in groups
+        )
+        / 7.5
+    )
+    root_delta = functional.smooth_l1_loss(
+        prediction[:, 1:, :3] - prediction[:, :-1, :3],
+        target[:, 1:, :3] - target[:, :-1, :3],
+    )
+    dof_delta = functional.smooth_l1_loss(
+        prediction[:, 1:, 9:38] - prediction[:, :-1, 9:38],
+        target[:, 1:, 9:38] - target[:, :-1, 9:38],
+    )
+    expected = grouped + 0.5 * (root_delta + dof_delta) / 2.0
+    torch.testing.assert_close(actual, expected)
 
 
 def test_authoritative_padding_mask_excludes_loss_and_partial_token_ema() -> None:

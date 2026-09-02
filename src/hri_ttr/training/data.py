@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol
 
 import numpy as np
 import torch
@@ -138,6 +138,18 @@ class AlignedWindowDataset(Dataset[TrainingWindow]):
     def __getitem__(self, index: int) -> TrainingWindow:
         """Return one frozen window by index."""
         return self._windows[index]
+
+
+class WindowDataset(Protocol):
+    """Sequence-bounded window access shared by memory and mmap datasets."""
+
+    def __len__(self) -> int:
+        """Return the available window count."""
+        ...
+
+    def __getitem__(self, index: int) -> TrainingWindow:
+        """Return one deterministic training window."""
+        ...
 
 
 def collate_windows(windows: list[TrainingWindow]) -> TrainingBatch:

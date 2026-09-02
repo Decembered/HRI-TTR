@@ -12,6 +12,7 @@ import numpy as np
 import typer
 
 from hri_ttr.commands.common import fail
+from hri_ttr.commands.corpus import audit_corpus, prepare_same_motion, smoke_load
 from hri_ttr.data.pairs import (
     PairPaths,
     PickleConsentRequiredError,
@@ -48,6 +49,10 @@ MINIMUM_TARGET_FRAMES: Final = 2
 PICKLE_WARNING: Final = (
     "Pickle can execute code. Permit only the trusted local Stage0 corpus."
 )
+
+_ = app.command("prepare-same-motion")(prepare_same_motion)
+_ = app.command("audit-corpus")(audit_corpus)
+_ = app.command("smoke-load")(smoke_load)
 
 
 def _pickle_policy(allow_trusted_pickle: bool) -> PickleTrustPolicy:

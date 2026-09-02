@@ -1,15 +1,21 @@
 """Versioned Human 262D feature normalizer with contact passthrough."""
 
+# pyright: reportAny=false
+
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final, cast
 
 import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import override
 
 from hri_ttr.representations.human.features import HUMAN_262_LAYOUT
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 Float32Array = NDArray[np.float32]
 SCHEMA_ID: Final = "human_intergen_262_v1"
@@ -97,6 +103,37 @@ class HumanFeatureNormalizer:
         values = self._features(features)
         return (values * self.std + self.mean).astype(np.float32)
 
+    def save(self, path: Path) -> None:
+        """Persist the schema-bound Human normalization statistics."""
+        payload = {
+            "schema_id": self.schema_id,
+            "schema_version": self.schema_version,
+            "source_dataset": self.source_dataset,
+            "fps": self.fps,
+            "mean": self.mean.tolist(),
+            "std": self.std.tolist(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = path.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> HumanFeatureNormalizer:
+        """Load only statistics matching the Human262 schema."""
+        parsed: object = json.loads(path.read_text(encoding="utf-8"))
+        value = cast("dict[str, object]", parsed) if isinstance(parsed, dict) else {}
+        if value.get("schema_id") != SCHEMA_ID or value.get("schema_version") != 1:
+            detail = f"normalizer schema mismatch: {path}"
+            raise NormalizerError(detail)
+        return cls.create(
+            np.asarray(value.get("mean"), dtype=np.float32),
+            np.asarray(value.get("std"), dtype=np.float32),
+            source_dataset=str(value.get("source_dataset", "")),
+            fps=_number(value.get("fps")),
+        )
+
     @staticmethod
     def _features(features: Float32Array) -> Float32Array:
         values = np.asarray(features, dtype=np.float32)
@@ -104,3 +141,10 @@ class HumanFeatureNormalizer:
             detail = "features must be finite with final dimension 262"
             raise NormalizerError(detail)
         return values
+
+
+def _number(value: object) -> float:
+    if not isinstance(value, int | float):
+        detail = "normalizer FPS must be numeric"
+        raise NormalizerError(detail)
+    return float(value)
