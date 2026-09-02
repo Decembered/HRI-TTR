@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import random
 import sys
 from itertools import pairwise
 from pathlib import Path
@@ -21,6 +22,8 @@ HUMAN_CHAINS = (
     (9, 14, 17, 19, 21),
     (9, 13, 16, 18, 20),
 )
+MINIMUM_DURATION_SECONDS = 2
+MAXIMUM_DURATION_SECONDS = 12
 
 
 def _parse_args() -> argparse.Namespace:
@@ -33,17 +36,18 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _choose_rows(path: Path, count: int) -> list[dict[str, Any]]:
-    rng = np.random.default_rng(20260902)
+    rng = random.Random(20260902)  # noqa: S311
     buckets: dict[str, list[dict[str, Any]]] = {}
     with path.open(encoding="utf-8") as stream:
         for line in stream:
             row = json.loads(line)
-            if 2 <= float(row["duration_sec"]) <= 12:  # noqa: PLR2004
+            duration = float(row["duration_sec"])
+            if MINIMUM_DURATION_SECONDS <= duration <= MAXIMUM_DURATION_SECONDS:
                 buckets.setdefault(row["source_dataset"], []).append(row)
     return [
-        buckets[dataset][int(index)]
+        row
         for dataset in sorted(buckets)
-        for index in rng.choice(len(buckets[dataset]), size=count, replace=False)
+        for row in rng.sample(buckets[dataset], count)
     ]
 
 

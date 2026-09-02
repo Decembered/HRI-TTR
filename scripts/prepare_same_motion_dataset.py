@@ -12,11 +12,11 @@ from typing import Any
 
 from same_motion_builders import (
     build_bone_record,
-    build_humanml,
     build_interx,
     load_bone_texts,
     write_pretty_json,
 )
+from same_motion_humanml import build_humanml
 
 from hri_ttr.data.same_motion_manifest import choose_group_split, write_jsonl
 

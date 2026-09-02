@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import re
 import sqlite3
 from collections import defaultdict
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import joblib
@@ -16,14 +14,11 @@ import numpy as np
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from pathlib import Path
 
     from numpy.typing import NDArray
 
 from hri_ttr.data.same_motion_manifest import (
-    aligned_clip_bounds,
-    canonical_amass_key,
-    choose_group_split,
-    ember_key,
     stable_split,
 )
 
@@ -39,7 +34,10 @@ def motion_signature(joints: NDArray[np.floating[Any]]) -> str:
     return hashlib.sha256(quantized.tobytes()).hexdigest()
 
 
-def _texts(labels: Iterable[object], kind: str, source_field: str) -> list[Json]:
+def texts_from_labels(
+    labels: Iterable[object], kind: str, source_field: str
+) -> list[Json]:
+    """Preserve source captions while assigning an explicit semantic kind."""
     output: list[Json] = []
     for label in labels:
         if isinstance(label, str):
@@ -209,8 +207,10 @@ def build_interx(root: Path) -> tuple[list[Json], list[Json]]:
         if human_frames != g1_frames:
             failures.append({"sequence_id": key, "reason": "frame count mismatch"})
             continue
-        texts = _texts(g1_row.get("frame_labels", []), "single_person", "frame_labels")
-        texts += _texts(
+        texts = texts_from_labels(
+            g1_row.get("frame_labels", []), "single_person", "frame_labels"
+        )
+        texts += texts_from_labels(
             g1_row.get("multi_person_texts", []), "interaction", "multi_person_texts"
         )
         base, person = key
@@ -253,120 +253,6 @@ def build_interx(root: Path) -> tuple[list[Json], list[Json]]:
         {"sequence_id": f"{key[0]}_{key[1]}", "reason": "no filtered G1"}
         for key in sorted(human.keys() - g1.keys())
     )
-    return records, failures
-
-
-def load_humanml_index(path: Path) -> dict[str, Json]:
-    """Load the official HumanML3D crop table."""
-    with path.open(newline="", encoding="utf-8") as stream:
-        return {Path(row["new_name"]).stem: row for row in csv.DictReader(stream)}
-
-
-def build_humanml(
-    root: Path, index_path: Path, ember_root: Path
-) -> tuple[list[Json], list[Json]]:
-    """Map HumanML3D clips to new Ember G1 files and exact time ranges."""
-    index = load_humanml_index(index_path)
-    ember: dict[tuple[str, str], list[tuple[Path, int]]] = defaultdict(list)
-    for path in ember_root.rglob("*.npz"):
-        parsed = ember_key(path, ember_root)
-        if parsed is not None:
-            key, source_fps = parsed
-            ember[key].append((path, source_fps))
-    rows: list[tuple[str, Path, Json]] = []
-    source_memberships: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for split in ("train", "val", "test"):
-        path = root / "smplx" / "seq_data" / f"{split}.pkl"
-        for row in joblib.load(path):
-            source_key = canonical_amass_key(str(row["feat_p"]))
-            source_memberships[source_key].add(split)
-            rows.append((split, path, row))
-    records: list[Json] = []
-    failures: list[Json] = []
-    for original_split, human_path, row in rows:
-        sequence_id = str(row["seq_name"])
-        crop = index.get(sequence_id)
-        source_key = canonical_amass_key(str(row["feat_p"]))
-        candidates = ember.get(source_key, [])
-        if crop is None or len(candidates) != 1:
-            reason = (
-                "no official crop"
-                if crop is None
-                else ("no Ember source" if not candidates else "ambiguous Ember source")
-            )
-            failures.append(
-                {"sequence_id": sequence_id, "source": row["feat_p"], "reason": reason}
-            )
-            continue
-        g1_path, source_fps = candidates[0]
-        relative_human_source = str(row["feat_p"]).replace("\\", "/")
-        relative_human_source = relative_human_source.removeprefix("./")
-        relative_human_source = relative_human_source.removeprefix("pose_data/")
-        full_human_path = root / "smplx" / "pose_data" / relative_human_source
-        with np.load(full_human_path, mmap_mode="r") as human_source:
-            human_source_frames = len(human_source["joints"])
-        with np.load(g1_path, mmap_mode="r") as g1_data:
-            g1_frames = len(g1_data["dof_positions"])
-        bounds = aligned_clip_bounds(
-            start_20hz=int(float(crop["start_frame"])),
-            end_20hz=int(float(crop["end_frame"])),
-            human_source_frames=human_source_frames,
-            g1_source_frames=g1_frames,
-        )
-        human_motion = row["motion"]
-        human_frames = len(human_motion["joints"])
-        if bounds.start < 0 or bounds.end > g1_frames or bounds.end <= bounds.start:
-            failures.append(
-                {
-                    "sequence_id": sequence_id,
-                    "source": row["feat_p"],
-                    "reason": "Ember crop out of bounds",
-                }
-            )
-            continue
-        texts = _texts(row.get("frame_labels", []), "single_person", "frame_labels")
-        final_split = choose_group_split(source_memberships[source_key])
-        records.append(
-            {
-                "schema_version": 1,
-                "sample_id": f"humanml3d:{sequence_id}",
-                "source_dataset": "HumanML3D",
-                "source_sequence_id": sequence_id,
-                "source_group_id": f"amass:{source_key[0]}/{source_key[1]}",
-                "augmentation": "clip",
-                "split_original": original_split,
-                "split": final_split,
-                "duration_sec": human_frames / 10.0,
-                "human": {
-                    "path": str(human_path),
-                    "format": "pickle_rows",
-                    "locator": sequence_id,
-                    "fps": 10.0,
-                    "frame_start": 0,
-                    "frame_end": human_frames,
-                    "fields": ["poses", "trans", "joints"],
-                },
-                "g1": {
-                    "path": str(g1_path),
-                    "format": "npz",
-                    "locator": None,
-                    "fps": bounds.effective_fps,
-                    "fps_file_value": 30.0,
-                    "source_fps": source_fps,
-                    "human_source_frames": human_source_frames,
-                    "g1_source_frames": g1_frames,
-                    "frame_start": bounds.start,
-                    "frame_end": bounds.end,
-                    "fields": ["body_positions", "body_rotations", "dof_positions"],
-                },
-                "texts": texts,
-                "has_text": bool(texts),
-                "human_signature": motion_signature(human_motion["joints"]),
-                "same_motion_evidence": (
-                    "official HumanML crop mapped to original AMASS and Ember retarget"
-                ),
-            }
-        )
     return records, failures
 
 
