@@ -41,13 +41,14 @@ def _mirror_atomic(source: Path, target: Path) -> None:
     _ = temporary.replace(target)
 
 
-def save_latest(state: ArtifactState) -> Path:
+def save_latest(state: ArtifactState, *, mirror_last: bool = True) -> Path:
     """Persist the newest checkpoint and the legacy ``last.pt`` alias."""
     path = state.config.output_dir / "latest.pt"
     snapshot = CheckpointSnapshot(binding=state.binding, progress=state.progress)
     if state.context.is_primary:
         save_training_checkpoint(path, state.components, snapshot)
-        _mirror_atomic(path, state.config.output_dir / "last.pt")
+        if mirror_last:
+            _mirror_atomic(path, state.config.output_dir / "last.pt")
     return path
 
 
@@ -66,7 +67,7 @@ def save_interrupted(state: ArtifactState) -> TrainingInterrupted:
     snapshot = CheckpointSnapshot(binding=state.binding, progress=state.progress)
     if state.context.is_primary:
         save_training_checkpoint(path, state.components, snapshot)
-        save_latest(state)
+        save_latest(state, mirror_last=False)
     return TrainingInterrupted(
         state.progress.global_step,
         state.progress.best_validation_loss,

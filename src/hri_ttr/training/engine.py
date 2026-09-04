@@ -198,6 +198,7 @@ def run_steps(
                 batch_in_epoch = current.batch_in_epoch
                 step = current.global_step
                 progress = current
+                _ = inputs.model.train()
             if step >= inputs.config.max_steps or inputs.stop.requested:
                 break
         if inputs.stop.requested:

@@ -127,12 +127,16 @@ class TorchCudaRng:
         torch.cuda.set_rng_state_all(list(states))
 
 
-@dataclass(frozen=True, slots=True)
 class CheckpointMismatchError(ValueError):
     """Reports the expected and stored immutable tokenizer identities."""
 
-    expected: CheckpointBinding
-    stored: CheckpointBinding
+    def __init__(
+        self, expected: CheckpointBinding, stored: CheckpointBinding
+    ) -> None:
+        """Keep the bindings available without freezing exception internals."""
+        super().__init__()
+        self.expected = expected
+        self.stored = stored
 
     @override
     def __str__(self) -> str:

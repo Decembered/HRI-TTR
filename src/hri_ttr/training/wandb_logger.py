@@ -5,13 +5,26 @@ from __future__ import annotations
 import importlib
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, MutableMapping, Protocol, cast
-
-from hri_ttr.training.engine import StepMetrics
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, MutableMapping
+
     from hri_ttr.training.config import TrainConfig, TrainingIdentity
     from hri_ttr.training.distributed import DistributedContext
+    from hri_ttr.training.engine import StepMetrics
+
+
+class WandbUnavailableError(RuntimeError):
+    """Raised when an enabled W&B run cannot import its client library."""
+
+
+class WandbRunIDError(RuntimeError):
+    """Raised when the persistent local W&B run ID is malformed."""
+
+    def __init__(self, path: object) -> None:
+        """Include the exact local metadata path in the diagnostic."""
+        super().__init__(f"empty W&B run ID in {path}")
 
 
 class _WandbRun(Protocol):
@@ -63,11 +76,9 @@ class WandbLogger:
         if not config.wandb_enabled or not context.is_primary:
             return logger
         try:
-            module = cast(_WandbModule, importlib.import_module("wandb"))
+            module = cast("_WandbModule", importlib.import_module("wandb"))
         except ModuleNotFoundError as error:
-            raise RuntimeError(
-                "wandb_enabled is true but the wandb package is not installed"
-            ) from error
+            raise WandbUnavailableError from error
 
         config.output_dir.mkdir(parents=True, exist_ok=True)
         run_id_path = config.output_dir / "wandb_run_id.txt"
@@ -77,7 +88,7 @@ class WandbLogger:
             run_id = module.util.generate_id()
             run_id_path.write_text(f"{run_id}\n", encoding="utf-8")
         if not run_id:
-            raise RuntimeError(f"empty W&B run ID in {run_id_path}")
+            raise WandbRunIDError(run_id_path)
 
         run_config = config.model_dump(mode="json")
         run_config.update(

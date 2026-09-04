@@ -124,13 +124,13 @@ def _barrier(context: DistributedContext) -> None:
         distributed.barrier()
 
 
-def _execute(
+def _execute(  # noqa: C901, PLR0915
     model: CausalMotionTokenizer,
     training_data: WindowDataset,
     validation_data: WindowDataset,
     invocation: TrainingInvocation,
     stop: StopController,
-) -> TrainingResult | TrainingInterrupted:  # noqa: C901, PLR0915
+) -> TrainingResult | TrainingInterrupted:
     context = initialize_distributed()
     logger = WandbLogger()
     try:
