@@ -12,6 +12,7 @@ from hri_ttr.training.data import (
     build_windows,
     collate_windows,
 )
+from hri_ttr.training.engine import StepMetrics
 from hri_ttr.training.results import TrainingInterrupted, TrainingResult
 from hri_ttr.training.trainer import run_training_boundary, train, train_datasets
 
@@ -19,6 +20,7 @@ __all__ = [
     "AlignedWindowDataset",
     "FeatureSequence",
     "ModelKind",
+    "StepMetrics",
     "TrainConfig",
     "TrainingBatch",
     "TrainingIdentity",

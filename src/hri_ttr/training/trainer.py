@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from pydantic import ConfigDict, TypeAdapter
+from torch import distributed
 from torch.nn.parallel import DistributedDataParallel
 
 from hri_ttr.checkpoints import (
@@ -26,11 +27,12 @@ from hri_ttr.training.data import (
     build_windows,
 )
 from hri_ttr.training.distributed import finalize_distributed, initialize_distributed
-from hri_ttr.training.engine import EngineInputs, run_steps, validate
+from hri_ttr.training.engine import EngineInputs, StepMetrics, run_steps, validate
 from hri_ttr.training.errors import TrainingError, TrainingReason
 from hri_ttr.training.losses import MaskedReconstructionLoss
 from hri_ttr.training.results import TrainingInterrupted, TrainingResult
 from hri_ttr.training.signals import StopController, installed_stop_controller
+from hri_ttr.training.wandb_logger import WandbLogger
 
 if TYPE_CHECKING:
     from hri_ttr.tokenizers.common.model import CausalMotionTokenizer
@@ -39,7 +41,14 @@ if TYPE_CHECKING:
         TrainingIdentity,
         TrainingInvocation,
     )
-from hri_ttr.training.artifacts import ArtifactState, save_completed, save_interrupted
+    from hri_ttr.training.distributed import DistributedContext
+from hri_ttr.training.artifacts import (
+    ArtifactState,
+    save_best,
+    save_completed,
+    save_interrupted,
+    save_latest,
+)
 
 _STATE_ADAPTER = TypeAdapter(
     dict[str, torch.Tensor], config=ConfigDict(arbitrary_types_allowed=True)
@@ -105,14 +114,25 @@ def _dataset(
     return AlignedWindowDataset(build_windows(sequences, window))
 
 
+def _barrier(context: DistributedContext) -> None:
+    """Keep ranks aligned around primary-only checkpoint writes."""
+    if (
+        context.world_size > 1
+        and distributed.is_available()
+        and distributed.is_initialized()
+    ):
+        distributed.barrier()
+
+
 def _execute(
     model: CausalMotionTokenizer,
     training_data: WindowDataset,
     validation_data: WindowDataset,
     invocation: TrainingInvocation,
     stop: StopController,
-) -> TrainingResult | TrainingInterrupted:
+) -> TrainingResult | TrainingInterrupted:  # noqa: C901, PLR0915
     context = initialize_distributed()
+    logger = WandbLogger()
     try:
         config = invocation.config
         torch.manual_seed(config.seed)
@@ -162,18 +182,85 @@ def _execute(
             loss=MaskedReconstructionLoss.for_schema(config.representation_schema),
             stop=stop,
         )
-        outcome = run_steps(engine, progress)
+        logger = WandbLogger.start(config, invocation.identity, context)
+        last_validation_step: int | None = None
+        last_validation_loss: float | None = None
+
+        def on_step(
+            metrics: StepMetrics, current: TrainingProgress
+        ) -> TrainingProgress:
+            nonlocal last_validation_step, last_validation_loss
+            validation_loss: float | None = None
+            should_validate = (
+                metrics.global_step % config.validation_every_steps == 0
+                or metrics.global_step >= config.max_steps
+            )
+            if should_validate:
+                validation = validate(engine)
+                if validation.loss is None:
+                    return current
+                validation_loss = validation.loss
+                last_validation_step = metrics.global_step
+                last_validation_loss = validation_loss
+                if validation_loss < current.best_validation_loss:
+                    current = current.model_copy(
+                        update={"best_validation_loss": validation_loss}
+                    )
+                    save_best(
+                        ArtifactState(
+                            config,
+                            context,
+                            components,
+                            binding,
+                            current,
+                            stop,
+                        )
+                    )
+                    _barrier(context)
+            if metrics.global_step % config.checkpoint_every_steps == 0:
+                save_latest(
+                    ArtifactState(
+                        config,
+                        context,
+                        components,
+                        binding,
+                        current,
+                        stop,
+                    )
+                )
+                _barrier(context)
+            logger.log(metrics, validation_loss)
+            return current
+
+        outcome = run_steps(engine, progress, on_step=on_step)
         progress = outcome.progress
         artifact_state = ArtifactState(
             config, context, components, binding, progress, stop
         )
         if outcome.interrupted:
             return save_interrupted(artifact_state)
-        validation = validate(engine)
-        if validation.loss is None:
+        if last_validation_step == progress.global_step:
+            validation_loss = last_validation_loss
+        else:
+            validation = validate(engine)
+            if validation.loss is None:
+                return save_interrupted(artifact_state)
+            validation_loss = validation.loss
+        if validation_loss is None:
             return save_interrupted(artifact_state)
-        return save_completed(artifact_state, validation.loss)
+        result = save_completed(artifact_state, validation_loss)
+        logger.set_summary(
+            {
+                "global_step": result.global_step,
+                "best_validation_loss": result.best_validation_loss,
+                "latest_checkpoint": str(config.output_dir / "latest.pt"),
+                "best_checkpoint": str(result.best_checkpoint),
+            }
+        )
+        _barrier(context)
+        return result
     finally:
+        logger.finish()
         finalize_distributed(context)
 
 
@@ -184,13 +271,14 @@ def train(
     invocation: TrainingInvocation,
 ) -> TrainingResult:
     """Train through a bounded step count with validation and exact resume."""
-    result = _execute(
-        model,
-        _dataset(training_sequences, invocation.config),
-        _dataset(validation_sequences, invocation.config),
-        invocation,
-        StopController(),
-    )
+    with installed_stop_controller() as stop:
+        result = _execute(
+            model,
+            _dataset(training_sequences, invocation.config),
+            _dataset(validation_sequences, invocation.config),
+            invocation,
+            stop,
+        )
     if isinstance(result, TrainingInterrupted):
         raise KeyboardInterrupt
     return result
@@ -220,9 +308,8 @@ def train_datasets(
     invocation: TrainingInvocation,
 ) -> TrainingResult:
     """Train from lazy sequence-bounded datasets without materializing all windows."""
-    result = _execute(
-        model, training_data, validation_data, invocation, StopController()
-    )
+    with installed_stop_controller() as stop:
+        result = _execute(model, training_data, validation_data, invocation, stop)
     if isinstance(result, TrainingInterrupted):
         raise KeyboardInterrupt
     return result

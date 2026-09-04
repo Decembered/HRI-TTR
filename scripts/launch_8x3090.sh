@@ -13,28 +13,38 @@ OUTPUT_DIR="$4"
 RESUME_PATH="${5:-}"
 ENV_DIR="${HRI_TTR_ENV_DIR:-/data/autovla/envs/hri-ttr}"
 MIN_FREE_MIB="${HRI_TTR_MIN_FREE_MIB:-16000}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+NPROC_PER_NODE="${HRI_TTR_NPROC_PER_NODE:-8}"
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  CUDA_VISIBLE_DEVICES="$(seq -s, 0 $((NPROC_PER_NODE - 1)))"
+fi
+export CUDA_VISIBLE_DEVICES
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-600}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-mapfile -t FREE_MEMORY < <(
-  nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits
-)
-if [[ "${#FREE_MEMORY[@]}" -ne 8 ]]; then
-  echo "expected exactly 8 visible physical GPUs" >&2
+IFS=',' read -r -a SELECTED_GPUS <<< "${CUDA_VISIBLE_DEVICES}"
+if [[ "${#SELECTED_GPUS[@]}" -ne "${NPROC_PER_NODE}" ]]; then
+  echo "CUDA_VISIBLE_DEVICES count must equal HRI_TTR_NPROC_PER_NODE" >&2
   exit 3
 fi
-for INDEX in "${!FREE_MEMORY[@]}"; do
-  if (( FREE_MEMORY[INDEX] < MIN_FREE_MIB )); then
-    echo "GPU ${INDEX} has ${FREE_MEMORY[INDEX]} MiB free; need ${MIN_FREE_MIB} MiB" >&2
+for GPU in "${SELECTED_GPUS[@]}"; do
+  FREE_MEMORY="$(nvidia-smi -i "${GPU}" --query-gpu=memory.free --format=csv,noheader,nounits | tr -d '[:space:]')"
+  if (( FREE_MEMORY < MIN_FREE_MIB )); then
+    echo "GPU ${GPU} has ${FREE_MEMORY} MiB free; need ${MIN_FREE_MIB} MiB" >&2
     exit 3
   fi
 done
 
 COMMAND=(
-  "${ENV_DIR}/bin/torchrun" --standalone --nproc-per-node=8
+  "${ENV_DIR}/bin/torchrun" --standalone
+)
+if [[ "${NPROC_PER_NODE}" == 8 ]]; then
+  COMMAND+=(--nproc-per-node=8)
+else
+  COMMAND+=("--nproc-per-node=${NPROC_PER_NODE}")
+fi
+COMMAND+=(
   --module hri_ttr.cli train "${DOMAIN}"
   --config "${CONFIG}" --corpus "${CORPUS}" --output-dir "${OUTPUT_DIR}"
 )

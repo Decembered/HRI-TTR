@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003 - Pydantic resolves this runtime annotation.
-from typing import ClassVar, Final, Self
+from typing import ClassVar, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -46,6 +46,14 @@ class TrainConfig(BaseModel):
     tokenizer_ema_decay: float = Field(default=0.99, ge=0.0, lt=1.0)
     tokenizer_commitment_weight: float = Field(default=1.0, gt=0.0)
     warm_start_checkpoint: Path | None = None
+    log_every_steps: int = Field(default=20, gt=0)
+    validation_every_steps: int = Field(default=1000, gt=0)
+    checkpoint_every_steps: int = Field(default=1000, gt=0)
+    wandb_enabled: bool = False
+    wandb_project: str = Field(default="hri-ttr-vqvae", min_length=1)
+    wandb_entity: str | None = None
+    wandb_run_name: str | None = None
+    wandb_mode: Literal["online", "offline"] = "online"
 
     @property
     def feature_dim(self) -> int:

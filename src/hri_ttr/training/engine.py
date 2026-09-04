@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 import signal
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 import torch
-from torch import nn
+from torch import distributed, nn
 
 from hri_ttr.checkpoints import TrainingProgress
 from hri_ttr.training.data import TrainingBatch, WindowDataset, collate_windows
@@ -59,6 +60,22 @@ class StepOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class StepMetrics:
+    """Global-mean metrics produced after one optimizer step."""
+
+    global_step: int
+    total_loss: float
+    reconstruction_loss: float
+    commitment_loss: float
+    grad_norm: float
+    perplexity: float
+    learning_rate: float
+
+
+StepHook = Callable[[StepMetrics, TrainingProgress], TrainingProgress]
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationOutcome:
     """Validation loss exists only when every batch completed."""
 
@@ -94,7 +111,24 @@ def _forward(inputs: EngineInputs, batch: TrainingBatch) -> TokenizerOutput:
     return inputs.distributed_model(features, frame_mask)
 
 
-def run_steps(inputs: EngineInputs, progress: TrainingProgress) -> StepOutcome:
+def _global_mean(value: torch.Tensor, inputs: EngineInputs) -> float:
+    """Return a scalar mean across all ranks without building a graph."""
+    reduced = value.detach().float()
+    if (
+        inputs.distributed.world_size > 1
+        and distributed.is_available()
+        and distributed.is_initialized()
+    ):
+        distributed.all_reduce(reduced, op=distributed.ReduceOp.SUM)
+        reduced = reduced / inputs.distributed.world_size
+    return float(reduced.item())
+
+
+def run_steps(
+    inputs: EngineInputs,
+    progress: TrainingProgress,
+    on_step: StepHook | None = None,
+) -> StepOutcome:
     """Continue from an exact epoch/batch position to the configured limit."""
     epoch = progress.epoch
     batch_in_epoch = progress.batch_in_epoch
@@ -129,7 +163,7 @@ def run_steps(inputs: EngineInputs, progress: TrainingProgress) -> StepOutcome:
                 scaled = inputs.scaler.scale(total)
                 torch.autograd.backward(scaled)
                 inputs.scaler.unscale_(inputs.optimizer)
-                _ = nn.utils.clip_grad_norm_(
+                grad_norm = nn.utils.clip_grad_norm_(
                     inputs.model.parameters(), inputs.config.gradient_clip_norm
                 )
                 _ = inputs.scaler.step(inputs.optimizer)
@@ -139,6 +173,31 @@ def run_steps(inputs: EngineInputs, progress: TrainingProgress) -> StepOutcome:
                 break
             step += 1
             batch_in_epoch = index + 1
+            current = TrainingProgress(
+                epoch=epoch,
+                batch_in_epoch=batch_in_epoch,
+                global_step=step,
+                best_validation_loss=progress.best_validation_loss,
+            )
+            if on_step is not None:
+                current = on_step(
+                    StepMetrics(
+                        global_step=step,
+                        total_loss=_global_mean(total, inputs),
+                        reconstruction_loss=_global_mean(reconstruction, inputs),
+                        commitment_loss=_global_mean(
+                            output.encoding.commitment_loss, inputs
+                        ),
+                        grad_norm=_global_mean(grad_norm, inputs),
+                        perplexity=_global_mean(output.encoding.perplexity, inputs),
+                        learning_rate=float(inputs.optimizer.param_groups[0]["lr"]),
+                    ),
+                    current,
+                )
+                epoch = current.epoch
+                batch_in_epoch = current.batch_in_epoch
+                step = current.global_step
+                progress = current
             if step >= inputs.config.max_steps or inputs.stop.requested:
                 break
         if inputs.stop.requested:
@@ -185,4 +244,11 @@ def validate(inputs: EngineInputs) -> ValidationOutcome:
                 return ValidationOutcome(None)
     if inputs.stop.requested:
         return ValidationOutcome(None)
+    if (
+        inputs.distributed.world_size > 1
+        and distributed.is_available()
+        and distributed.is_initialized()
+    ):
+        distributed.all_reduce(total, op=distributed.ReduceOp.SUM)
+        distributed.all_reduce(batches, op=distributed.ReduceOp.SUM)
     return ValidationOutcome(float((total / batches).item()))
