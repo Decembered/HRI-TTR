@@ -1,0 +1,95 @@
+[project]
+name = "hri-ttr"
+version = "0.1.0"
+description = "Standalone causal Human-to-G1 motion-token research project."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "joblib>=1.4",
+    "matplotlib>=3.10",
+    "numpy>=2.0",
+    "pydantic>=2.10",
+    "torch==2.7.1",
+    "typer>=0.15",
+    "typing-extensions>=4.12",
+]
+
+[project.scripts]
+hri-ttr = "hri_ttr.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.31",
+    "joblib-stubs>=1.4",
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+
+[tool.basedpyright]
+typeCheckingMode = "all"
+pythonVersion = "3.11"
+pythonPlatform = "All"
+include = ["src", "tests"]
+exclude = ["**/__pycache__", "**/.venv", "**/build", "**/dist"]
+reportUnusedCallResult = "warning"
+reportUnusedVariable = "error"
+reportMissingParameterType = "error"
+reportPrivateUsage = "error"
+# PyTorch 2.7 exposes public runtime APIs through extension modules whose bundled
+# annotations do not declare every export or nn.Module constructor precisely.
+reportPrivateImportUsage = false
+reportUnknownMemberType = false
+reportUntypedFunctionDecorator = false
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",
+    "CPY001",
+    "D203",
+    "D213",
+    "FBT001",
+    "FBT002",
+    "FIX002",
+    "ISC001",
+    "S105",
+    "TD002",
+    "TD003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ARG", "D", "PLR2004", "S101", "SLF001"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+filterwarnings = ["error"]

@@ -1,0 +1,9 @@
+{
+  "dataset_id": "filtered_humanml3d_interx_v3",
+  "input_fps": 20,
+  "frames_per_token": 4,
+  "split_file": "manifest/same_motion.jsonl",
+  "human_schema": "human_intergen_262_v1",
+  "g1_schema": "g1_canonical_75d_v2",
+  "sequence_count": 28500
+}

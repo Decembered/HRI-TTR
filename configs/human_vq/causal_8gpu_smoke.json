@@ -1,0 +1,21 @@
+{
+  "model_kind": "human",
+  "representation_schema": "human_intergen_262_v1",
+  "output_dir": "/data/autovla/projects/HRI-TTR/runs/remote-smoke/human",
+  "seed": 20260902,
+  "epochs": 3,
+  "max_steps": 2,
+  "batch_size": 1,
+  "window_frames": 8,
+  "window_stride": 8,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0,
+  "gradient_clip_norm": 1.0,
+  "amp": true,
+  "tokenizer_width": 8,
+  "tokenizer_code_dim": 4,
+  "tokenizer_codebook_size": 256,
+  "tokenizer_residual_depth": 1,
+  "tokenizer_ema_decay": 0.99,
+  "tokenizer_commitment_weight": 1.0
+}
